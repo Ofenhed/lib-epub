@@ -38,12 +38,15 @@
 //! - Required metadata includes: `title`, `language`, and `identifier` with id `pub-id`.
 
 use std::{
+    collections::HashMap,
     cmp::Reverse,
     env,
     fs::{self, File},
     io::{BufReader, Cursor, Read, Seek},
     marker::PhantomData,
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::Mutex,
 };
 
 use log::warn;
@@ -81,6 +84,13 @@ type XmlWriter = Writer<Cursor<Vec<u8>>>;
 // struct EpubVersion2;
 #[cfg_attr(test, derive(Debug))]
 pub struct EpubVersion3;
+
+#[derive(Debug, Clone)]
+enum BuilderBackend {
+    #[cfg(feature = "fs")]
+    Fs(PathBuf),
+    Memory(Rc<Mutex<HashMap<PathBuf, Cursor<Vec<u8>>>>>),
+}
 
 /// EPUB Builder
 ///
@@ -146,7 +156,7 @@ pub struct EpubBuilder<Version> {
     epub_version: PhantomData<Version>,
 
     /// Temporary directory path for storing files during the build process
-    pub(crate) temp_dir: PathBuf,
+    pub(crate) temp_dir: BuilderBackend,
 
     pub(crate) rootfiles: RootfileBuilder,
     pub(crate) metadata: MetadataBuilder,
@@ -164,6 +174,7 @@ impl EpubBuilder<EpubVersion3> {
     /// ## Return
     /// - `Ok(EpubBuilder)`: Builder instance created successfully
     /// - `Err(EpubError)`: Error occurred during builder initialization
+    #[cfg(feature = "fs")]
     pub fn new() -> Result<Self, EpubError> {
         let temp_dir = env::temp_dir().join(local_time());
         fs::create_dir(&temp_dir)?;
@@ -172,6 +183,7 @@ impl EpubBuilder<EpubVersion3> {
         let mime_file = temp_dir.join("mimetype");
         fs::write(mime_file, "application/epub+zip")?;
 
+        let temp_dir = BuilderBackend::Fs(temp_dir.clone());
         Ok(EpubBuilder {
             epub_version: PhantomData,
             temp_dir: temp_dir.clone(),

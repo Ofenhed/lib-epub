@@ -34,6 +34,7 @@ flate2 = "1.1.9"
 [features]
 default = ["indexmap"]
 
-builder = ["chrono", "infer", "walkdir"]
+fs = ["dep:walkdir", "builder"]
+builder = ["dep:chrono", "dep:infer"]
 content-builder = ["builder"]
 no-indexmap = []

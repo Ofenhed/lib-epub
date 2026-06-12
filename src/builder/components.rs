@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use chrono::{SecondsFormat, Utc};
@@ -16,7 +16,7 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 #[cfg(feature = "content-builder")]
 use crate::builder::content::ContentBuilder;
 use crate::{
-    builder::{XmlWriter, normalize_manifest_path, refine_mime_type},
+    builder::{XmlWriter, normalize_manifest_path, refine_mime_type, BuilderBackend},
     error::{EpubBuilderError, EpubError},
     types::{ManifestItem, MetadataItem, MetadataSheet, NavPoint, SpineItem},
     utils::ELEMENT_IN_DC_NAMESPACE,
@@ -266,7 +266,7 @@ impl MetadataBuilder {
 #[derive(Debug)]
 pub struct ManifestBuilder {
     /// Temporary directory for storing files during build
-    temp_dir: PathBuf,
+    temp_dir: BuilderBackend,
 
     /// Rootfile path (OPF file location)
     rootfile: Option<String>,
@@ -283,9 +283,9 @@ impl ManifestBuilder {
     ///
     /// ## Parameters
     /// - `temp_dir`: Temporary directory path for storing files during the build process
-    pub(crate) fn new(temp_dir: impl AsRef<Path>) -> Self {
+    pub(crate) fn new(temp_dir: &BuilderBackend) -> Self {
         Self {
-            temp_dir: temp_dir.as_ref().to_path_buf(),
+            temp_dir: temp_dir.clone(),
             rootfile: None,
             #[cfg(feature = "no-indexmap")]
             manifest: HashMap::new(),
