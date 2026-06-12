@@ -3,6 +3,7 @@ use std::collections::HashMap;
 #[cfg(feature = "content-builder")]
 use std::io::Read;
 use std::{
+    borrow::Cow,
     fs,
     path::PathBuf,
 };
@@ -266,7 +267,7 @@ impl MetadataBuilder {
 #[derive(Debug)]
 pub struct ManifestBuilder {
     /// Temporary directory for storing files during build
-    temp_dir: BuilderBackend,
+    temp_dir: BuilderBackend<'static>,
 
     /// Rootfile path (OPF file location)
     rootfile: Option<String>,
@@ -283,7 +284,7 @@ impl ManifestBuilder {
     ///
     /// ## Parameters
     /// - `temp_dir`: Temporary directory path for storing files during the build process
-    pub(crate) fn new(temp_dir: BuilderBackend) -> Self {
+    pub(crate) fn new(temp_dir: BuilderBackend<'static>) -> Self {
         Self {
             temp_dir: temp_dir,
             rootfile: None,
@@ -801,6 +802,7 @@ impl DocumentBuilder {
     /// ## Return
     /// - `Ok(Vec<ManifestItem>)`: List of manifest items generated from the content documents
     /// - `Err(EpubError)`: Error if document generation or file processing fails
+    #[cfg(feature = "fs")]
     pub fn make(
         &mut self,
         temp_dir: PathBuf,
@@ -815,7 +817,7 @@ impl DocumentBuilder {
 
             // target is relative to the epub file, so we need to normalize it
             let absolute_target =
-                normalize_manifest_path(&temp_dir, &rootfile, &target, &manifest_id)?;
+                normalize_manifest_path(&BuilderBackend::Fs(Cow::Borrowed(&temp_dir)), &rootfile, &target, &manifest_id)?;
             let mut resources = content.make(&absolute_target)?;
 
             // Helper to compute absolute container path

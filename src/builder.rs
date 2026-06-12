@@ -38,6 +38,7 @@
 //! - Required metadata includes: `title`, `language`, and `identifier` with id `pub-id`.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     cmp::Reverse,
     env,
@@ -85,11 +86,12 @@ type XmlWriter = Writer<Cursor<Vec<u8>>>;
 #[cfg_attr(test, derive(Debug))]
 pub struct EpubVersion3;
 
+type MemoryBackendType = Rc<Mutex<HashMap<Cow<'static, Path>, Cursor<Vec<u8>>>>>;
 #[derive(Debug, Clone)]
-enum BuilderBackend {
+enum BuilderBackend<'a> {
     #[cfg(feature = "fs")]
-    Fs(PathBuf),
-    Memory(Rc<Mutex<HashMap<PathBuf, Cursor<Vec<u8>>>>>),
+    Fs(Cow<'a, Path>),
+    Memory(MemoryBackendType),
 }
 
 /// EPUB Builder
@@ -156,7 +158,7 @@ pub struct EpubBuilder<Version> {
     epub_version: PhantomData<Version>,
 
     /// Temporary directory path for storing files during the build process
-    pub(crate) temp_dir: BuilderBackend,
+    pub(crate) temp_dir: BuilderBackend<'static>,
 
     pub(crate) rootfiles: RootfileBuilder,
     pub(crate) metadata: MetadataBuilder,
@@ -169,7 +171,7 @@ pub struct EpubBuilder<Version> {
 }
 
 impl EpubBuilder<EpubVersion3> {
-    /// Create a new `EpubBuilder` instance
+    /// Create a new `EpubBuilder` instance in a temporary directory
     ///
     /// ## Return
     /// - `Ok(EpubBuilder)`: Builder instance created successfully
@@ -183,7 +185,38 @@ impl EpubBuilder<EpubVersion3> {
         let mime_file = temp_dir.join("mimetype");
         fs::write(mime_file, "application/epub+zip")?;
 
-        let temp_dir = BuilderBackend::Fs(temp_dir.clone());
+        let temp_dir = BuilderBackend::Fs(Cow::Owned(temp_dir.clone()));
+        Ok(EpubBuilder {
+            epub_version: PhantomData,
+            temp_dir: temp_dir.clone(),
+
+            rootfiles: RootfileBuilder::new(),
+            metadata: MetadataBuilder::new(),
+            manifest: ManifestBuilder::new(temp_dir),
+            spine: SpineBuilder::new(),
+            catalog: CatalogBuilder::new(),
+
+            #[cfg(feature = "content-builder")]
+            content: DocumentBuilder::new(),
+        })
+    }
+    
+    /// Create a new `EpubBuilder` instance in memory
+    ///
+    /// ## Return
+    /// - `Ok(EpubBuilder)`: Builder instance created successfully
+    /// - `Err(EpubError)`: Error occurred during builder initialization
+    #[cfg(feature = "fs")]
+    pub fn new_memory() -> Result<Self, EpubError> {
+        let (temp_dir, backend) = {
+            let backend = MemoryBackendType::default();
+            (BuilderBackend::Memory(backend.clone()), backend)
+        };
+        {
+            let mut temp_dir = backend.lock()?;
+            temp_dir.insert(Cow::Borrowed(Path::new("mimetype")),  Cursor::new(b"application/epub+zip".into()));
+        }
+
         Ok(EpubBuilder {
             epub_version: PhantomData,
             temp_dir: temp_dir.clone(),
@@ -424,7 +457,7 @@ impl EpubBuilder<EpubVersion3> {
         let options = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
 
         match &self.temp_dir {
-            BuilderBackend::Memory(mem) => todo!(),
+            BuilderBackend::Memory(_mem) => todo!(),
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
                 for entry in WalkDir::new(temp_dir) {
@@ -433,7 +466,7 @@ impl EpubBuilder<EpubVersion3> {
 
                     // It can be asserted that the path is prefixed with temp_dir,
                     // and there will be no boundary cases of symbolic links and hard links, etc.
-                    let relative_path = path.strip_prefix(&self.temp_dir).unwrap();
+                    let relative_path = path.strip_prefix(temp_dir).unwrap();
                     let target_path = relative_path.to_string_lossy().replace("\\", "/");
 
                     if path.is_file() {
@@ -553,14 +586,15 @@ impl EpubBuilder<EpubVersion3> {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
         self.rootfiles.make(&mut writer)?;
 
-        match self.temp_dir {
+        let filename = Cow::Borrowed(Path::new("META-INF/container.xml"));
+        match &self.temp_dir {
             BuilderBackend::Memory(mem) => {
-                let fs = mem.lock()?;
-                fs.insert("META-INF/container.xml", writer);
+                let mut fs = mem.lock()?;
+                fs.insert(filename, writer.into_inner());
             }
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
-                let file_path = self.temp_dir.join("META-INF").join("container.xml");
+                let file_path = temp_dir.join(filename);
                 let file_data = writer.into_inner().into_inner();
                 fs::write(file_path, file_data)?;
             }
@@ -595,9 +629,19 @@ impl EpubBuilder<EpubVersion3> {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
         self.catalog.make(&mut writer)?;
 
-        let file_path = self.temp_dir.join("nav.xhtml");
-        let file_data = writer.into_inner().into_inner();
-        fs::write(file_path, file_data)?;
+        let filename = Cow::Borrowed(Path::new("nav.xhtml"));
+        match &self.temp_dir {
+            BuilderBackend::Memory(fs) => {
+                let mut fs = fs.lock()?;
+                fs.insert(filename, writer.into_inner());
+            }
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                let file_path = temp_dir.join(filename);
+                let file_data = writer.into_inner().into_inner();
+                fs::write(file_path, file_data)?;
+            }
+        }
 
         self.manifest.insert(
             "nav".to_string(),
@@ -738,12 +782,17 @@ fn refine_mime_type<'a>(infer_mime: &'a str, extension: &'a str) -> &'a str {
 ///   which does not start with "/"
 /// - `Err(EpubError)`: Error if path traversal is detected outside the EPUB container,
 ///   or if the absolute path cannot be determined
-fn normalize_manifest_path<TempD: AsRef<Path>, S: AsRef<str>, P: AsRef<Path>>(
-    temp_dir: TempD,
+fn normalize_manifest_path<S: AsRef<str>, P: AsRef<Path>>(
+    temp_dir: &BuilderBackend,
     rootfile: S,
     path: P,
     id: &str,
 ) -> Result<PathBuf, EpubError> {
+    let temp_dir = match temp_dir {
+        BuilderBackend::Memory(_) => Cow::Borrowed(Path::new("")),
+        #[cfg(feature = "fs")]
+        BuilderBackend::Fs(fs) => fs.clone(),
+    };
     let opf_path = PathBuf::from(rootfile.as_ref());
     let basic_path = remove_leading_slash(opf_path.parent().unwrap());
 
