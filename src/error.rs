@@ -83,6 +83,15 @@ pub enum EpubError {
     )]
     NoSupportedFileFormat,
 
+    /// Opened file as directory error
+    ///
+    /// This error occurs when trying to get a resource as a directory that has previously been
+    /// saved as a file.
+    #[error(
+        "Tried to open a directory that has previously been written as a file"
+    )]
+    OpenedFileAsDirectory,
+
     /// Relative link leak error
     ///
     /// This error occurs when a relative path link is outside the scope

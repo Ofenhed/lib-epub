@@ -41,6 +41,7 @@
 //! - The builder automatically creates a temporary directory for storing files during construction.
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     env,
     fs::{self, File},
@@ -57,7 +58,7 @@ use quick_xml::{
 use walkdir::WalkDir;
 
 use crate::{
-    builder::XmlWriter,
+    builder::{BuilderBackend, XmlWriter},
     error::{EpubBuilderError, EpubError},
     types::{BlockType, Footnote, StyleOptions},
     utils::local_time,
@@ -1305,36 +1306,7 @@ impl ContentBuilder {
         Ok(self)
     }
 
-    /// Builds content document
-    ///
-    /// The final constructed content document has the following structure:
-    ///
-    /// ```xhtml
-    /// <body>
-    ///     <main>
-    ///         <!-- The specific block structure can be queried in the Block docs. -->
-    ///     </main>
-    ///     <aside>
-    ///         <ul class="footnote-list">
-    ///             <!-- Each footnote has the same structure. -->
-    ///             <li class="footnote-item" id="footnote-{{ index }}">
-    ///                 <p>
-    ///                     <a herf="ref-{{ index }}">[{{ index }}]</a>
-    ///                     {{ footnote.content }}
-    ///                 </p>
-    ///             </li>
-    ///         </ul>
-    ///     </aside>
-    /// </body>
-    /// ```
-    ///
-    /// ## Parameters
-    /// - `target`: The file path where the document should be written
-    ///
-    /// ## Return
-    /// - `Ok(Vec<PathBuf>)`: A vector of paths to all resources used in the document
-    /// - `Err(EpubError)`: Error occurred during the making process
-    pub fn make<P: AsRef<Path>>(&mut self, target: P) -> Result<Vec<PathBuf>, EpubError> {
+    pub(crate) fn make_into(&mut self, target: &BuilderBackend) -> Result<Vec<PathBuf>, EpubError> {
         let mut result = Vec::new();
 
         // Handle target directory, create if it doesn't exist
@@ -1379,6 +1351,40 @@ impl ContentBuilder {
         }
 
         Ok(result)
+    }
+
+    /// Builds content document
+    ///
+    /// The final constructed content document has the following structure:
+    ///
+    /// ```xhtml
+    /// <body>
+    ///     <main>
+    ///         <!-- The specific block structure can be queried in the Block docs. -->
+    ///     </main>
+    ///     <aside>
+    ///         <ul class="footnote-list">
+    ///             <!-- Each footnote has the same structure. -->
+    ///             <li class="footnote-item" id="footnote-{{ index }}">
+    ///                 <p>
+    ///                     <a herf="ref-{{ index }}">[{{ index }}]</a>
+    ///                     {{ footnote.content }}
+    ///                 </p>
+    ///             </li>
+    ///         </ul>
+    ///     </aside>
+    /// </body>
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `target`: The file path where the document should be written
+    ///
+    /// ## Return
+    /// - `Ok(Vec<PathBuf>)`: A vector of paths to all resources used in the document
+    /// - `Err(EpubError)`: Error occurred during the making process
+    #[cfg(feature = "fs")]
+    pub fn make<P: AsRef<Path>>(&mut self, target: P) -> Result<Vec<PathBuf>, EpubError> {
+        self.make_into(&BuilderBackend::Fs(Cow::Borrowed(target.as_ref())))
     }
 
     /// Write the document to a file

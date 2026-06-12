@@ -47,7 +47,7 @@ use std::{
     marker::PhantomData,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 use log::warn;
@@ -86,7 +86,40 @@ type XmlWriter = Writer<Cursor<Vec<u8>>>;
 #[cfg_attr(test, derive(Debug))]
 pub struct EpubVersion3;
 
-type MemoryBackendType = Rc<Mutex<HashMap<Cow<'static, Path>, Cursor<Vec<u8>>>>>;
+type MemoryBackendInnerType = HashMap<Cow<'static, Path>, EntityType>;
+type MemoryBackendType = Rc<Mutex<MemoryBackendInnerType>>;
+
+#[derive(Debug, Clone)]
+enum EntityType {
+    Directory(MemoryBackendType),
+    File(Cursor<Vec<u8>>)
+}
+
+impl EntityType {
+    fn dir() -> Self {
+        Self::Directory(MemoryBackendType::default())
+    }
+
+    fn lock_dir(&self) -> Result<MutexGuard<'_, MemoryBackendInnerType>, EpubError> {
+        match self {
+            Self::Directory(l) => Ok(l.lock()?),
+            Self::File(_) => Err(EpubError::OpenedFileAsDirectory),
+        }
+    }
+}
+
+impl Default for EntityType {
+    fn default() -> Self {
+        Self::dir()
+    }
+}
+
+impl From<Cursor<Vec<u8>>> for EntityType {
+    fn from(from: Cursor<Vec<u8>>) -> Self {
+        Self::File(from)
+    }
+}
+
 #[derive(Debug, Clone)]
 enum BuilderBackend<'a> {
     #[cfg(feature = "fs")]
@@ -214,7 +247,8 @@ impl EpubBuilder<EpubVersion3> {
         };
         {
             let mut temp_dir = backend.lock()?;
-            temp_dir.insert(Cow::Borrowed(Path::new("mimetype")),  Cursor::new(b"application/epub+zip".into()));
+            temp_dir.insert(Cow::Borrowed(Path::new("META-INF")), EntityType::dir());
+            temp_dir.insert(Cow::Borrowed(Path::new("mimetype")), EntityType::File(Cursor::new(b"application/epub+zip".into())));
         }
 
         Ok(EpubBuilder {
@@ -590,7 +624,8 @@ impl EpubBuilder<EpubVersion3> {
         match &self.temp_dir {
             BuilderBackend::Memory(mem) => {
                 let mut fs = mem.lock()?;
-                fs.insert(filename, writer.into_inner());
+                let mut meta_inf = fs.entry(Cow::Borrowed(Path::new("META-INF"))).or_default().lock_dir()?;
+                meta_inf.insert(Cow::Borrowed(Path::new("container.xml")), writer.into_inner().into());
             }
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
@@ -633,7 +668,7 @@ impl EpubBuilder<EpubVersion3> {
         match &self.temp_dir {
             BuilderBackend::Memory(fs) => {
                 let mut fs = fs.lock()?;
-                fs.insert(filename.clone(), writer.into_inner());
+                fs.insert(filename.clone(), writer.into_inner().into());
             }
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
@@ -689,7 +724,7 @@ impl EpubBuilder<EpubVersion3> {
         match &self.temp_dir {
             BuilderBackend::Memory(mem) => {
                 let mut fs = mem.lock()?;
-                fs.insert(Cow::Owned(Path::new("/").join(filename)), writer.into_inner());
+                fs.insert(Cow::Owned(Path::new(filename.as_str()).to_path_buf()), writer.into_inner().into());
             },
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
