@@ -423,22 +423,28 @@ impl EpubBuilder<EpubVersion3> {
         let mut zip = ZipWriter::new(file);
         let options = FileOptions::<()>::default().compression_method(CompressionMethod::Stored);
 
-        for entry in WalkDir::new(&self.temp_dir) {
-            let entry = entry?;
-            let path = entry.path();
+        match &self.temp_dir {
+            BuilderBackend::Memory(mem) => todo!(),
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                for entry in WalkDir::new(temp_dir) {
+                    let entry = entry?;
+                    let path = entry.path();
 
-            // It can be asserted that the path is prefixed with temp_dir,
-            // and there will be no boundary cases of symbolic links and hard links, etc.
-            let relative_path = path.strip_prefix(&self.temp_dir).unwrap();
-            let target_path = relative_path.to_string_lossy().replace("\\", "/");
+                    // It can be asserted that the path is prefixed with temp_dir,
+                    // and there will be no boundary cases of symbolic links and hard links, etc.
+                    let relative_path = path.strip_prefix(&self.temp_dir).unwrap();
+                    let target_path = relative_path.to_string_lossy().replace("\\", "/");
 
-            if path.is_file() {
-                zip.start_file(target_path, options)?;
+                    if path.is_file() {
+                        zip.start_file(target_path, options)?;
 
-                let mut file = File::open(path)?;
-                std::io::copy(&mut file, &mut zip)?;
-            } else if path.is_dir() {
-                zip.add_directory(target_path, options)?;
+                        let mut file = File::open(path)?;
+                        std::io::copy(&mut file, &mut zip)?;
+                    } else if path.is_dir() {
+                        zip.add_directory(target_path, options)?;
+                    }
+                }
             }
         }
 
@@ -547,9 +553,18 @@ impl EpubBuilder<EpubVersion3> {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
         self.rootfiles.make(&mut writer)?;
 
-        let file_path = self.temp_dir.join("META-INF").join("container.xml");
-        let file_data = writer.into_inner().into_inner();
-        fs::write(file_path, file_data)?;
+        match self.temp_dir {
+            BuilderBackend::Memory(mem) => {
+                let fs = mem.lock()?;
+                fs.insert("META-INF/container.xml", writer);
+            }
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                let file_path = self.temp_dir.join("META-INF").join("container.xml");
+                let file_data = writer.into_inner().into_inner();
+                fs::write(file_path, file_data)?;
+            }
+        }
 
         Ok(())
     }

@@ -283,9 +283,9 @@ impl ManifestBuilder {
     ///
     /// ## Parameters
     /// - `temp_dir`: Temporary directory path for storing files during the build process
-    pub(crate) fn new(temp_dir: &BuilderBackend) -> Self {
+    pub(crate) fn new(temp_dir: BuilderBackend) -> Self {
         Self {
-            temp_dir: temp_dir.clone(),
+            temp_dir: temp_dir,
             rootfile: None,
             #[cfg(feature = "no-indexmap")]
             manifest: HashMap::new(),
