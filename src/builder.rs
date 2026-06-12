@@ -633,11 +633,11 @@ impl EpubBuilder<EpubVersion3> {
         match &self.temp_dir {
             BuilderBackend::Memory(fs) => {
                 let mut fs = fs.lock()?;
-                fs.insert(filename, writer.into_inner());
+                fs.insert(filename.clone(), writer.into_inner());
             }
             #[cfg(feature = "fs")]
             BuilderBackend::Fs(temp_dir) => {
-                let file_path = temp_dir.join(filename);
+                let file_path = temp_dir.join(&filename);
                 let file_data = writer.into_inner().into_inner();
                 fs::write(file_path, file_data)?;
             }
@@ -647,7 +647,7 @@ impl EpubBuilder<EpubVersion3> {
             "nav".to_string(),
             ManifestItem {
                 id: "nav".to_string(),
-                path: PathBuf::from("/nav.xhtml"),
+                path: Path::new("/").join(&filename),
                 mime: "application/xhtml+xml".to_string(),
                 properties: Some("nav".to_string()),
                 fallback: None,
@@ -685,11 +685,20 @@ impl EpubBuilder<EpubVersion3> {
 
         writer.write_event(Event::End(BytesEnd::new("package")))?;
 
-        let file_path = self
-            .temp_dir
-            .join(self.rootfiles.first().expect("Unreachable"));
-        let file_data = writer.into_inner().into_inner();
-        fs::write(file_path, file_data)?;
+        let filename = self.rootfiles.first().expect("Unreachable");
+        match &self.temp_dir {
+            BuilderBackend::Memory(mem) => {
+                let mut fs = mem.lock()?;
+                fs.insert(Cow::Owned(Path::new("/").join(filename)), writer.into_inner());
+            },
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                let file_path = temp_dir
+                    .join(filename);
+                let file_data = writer.into_inner().into_inner();
+                fs::write(file_path, file_data)?;
+            }
+        }
 
         Ok(())
     }
@@ -705,32 +714,44 @@ impl EpubBuilder<EpubVersion3> {
     /// - `Ok(())`: Successfully removed all empty directories
     /// - `Err(EpubError)`: IO error
     fn remove_empty_dirs(&self) -> Result<(), EpubError> {
-        let mut dirs = WalkDir::new(self.temp_dir.as_path())
-            .min_depth(1)
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().is_dir())
-            .map(|entry| entry.into_path())
-            .collect::<Vec<PathBuf>>();
+        match &self.temp_dir {
+            BuilderBackend::Memory(_) => Ok(()),
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                let mut dirs = WalkDir::new(temp_dir)
+                    .min_depth(1)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.file_type().is_dir())
+                    .map(|entry| entry.into_path())
+                    .collect::<Vec<PathBuf>>();
 
-        dirs.sort_by_key(|p| Reverse(p.components().count()));
+                dirs.sort_by_key(|p| Reverse(p.components().count()));
 
-        for dir in dirs {
-            if fs::read_dir(&dir)?.next().is_none() {
-                fs::remove_dir(dir)?;
+                for dir in dirs {
+                    if fs::read_dir(&dir)?.next().is_none() {
+                        fs::remove_dir(dir)?;
+                    }
+                }
+
+                Ok(())
             }
         }
-
-        Ok(())
     }
 }
 
 impl<Version> Drop for EpubBuilder<Version> {
     /// Remove temporary directory when dropped
     fn drop(&mut self) {
-        if let Err(err) = fs::remove_dir_all(&self.temp_dir) {
-            warn!("{}", err);
-        };
+        match &self.temp_dir {
+            BuilderBackend::Memory(_) => (),
+            #[cfg(feature = "fs")]
+            BuilderBackend::Fs(temp_dir) => {
+                if let Err(err) = fs::remove_dir_all(temp_dir) {
+                    warn!("{}", err);
+                };
+            }
+        }
     }
 }
 
